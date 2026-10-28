@@ -8,6 +8,7 @@ import { NoteIndex } from '../../src/noteIndex';
 import { NoteExplorer } from '../../src/noteExplorer';
 import { DEFAULT_FOLDERS } from '../../src/model';
 import { parseNote, serializeNote } from '../../src/frontmatter';
+import { validateSelectedFolders } from '../../src/addFolder';
 
 async function eventually(predicate: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 12000;
@@ -30,6 +31,29 @@ export async function run(): Promise<void> {
   assert.equal(await fs.readFile(path.join(root.fsPath, 'notes/idea.md'), 'utf8'), oldIdea);
   assert.equal(await fs.readFile(path.join(root.fsPath, 'reading/old.md'), 'utf8'), oldReference);
   console.log('PASS activation preserves existing files and directories');
+
+  assert.equal(vscode.workspace.getConfiguration('folderNotesMD', root).inspect('folders')?.workspaceFolderValue, undefined);
+  const defaultFolderFiles = new Map(DEFAULT_FOLDERS.map(folder => [`${folder}/preserved.md`, `# Existing ${folder} note\n`]));
+  for (const [relativePath, text] of defaultFolderFiles) {
+    await fs.mkdir(path.dirname(path.join(root.fsPath, relativePath)), { recursive: true });
+    await fs.writeFile(path.join(root.fsPath, relativePath), text);
+  }
+  await vscode.commands.executeCommand('folderNotesMD.removeFolder', 'idea');
+  assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).inspect('folders')?.workspaceFolderValue, ['note'], 'Removing an inherited default writes a folder-level override');
+  await vscode.commands.executeCommand('folderNotesMD.removeFolder', 'note');
+  await vscode.commands.executeCommand('folderNotesMD.refresh');
+  assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), [], 'Removing the final default persists an empty list across refresh');
+  assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).inspect('folders')?.workspaceFolderValue, []);
+  for (const [relativePath, text] of defaultFolderFiles) {
+    assert.equal(await fs.readFile(path.join(root.fsPath, relativePath), 'utf8'), text, 'Removing a default folder preserves its files');
+    assert.ok((await fs.stat(path.dirname(path.join(root.fsPath, relativePath)))).isDirectory());
+    await fs.unlink(path.join(root.fsPath, relativePath));
+  }
+  for (const folder of DEFAULT_FOLDERS) await fs.rmdir(path.join(root.fsPath, folder));
+  await vscode.workspace.getConfiguration('folderNotesMD', root).update('folders', undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+  await vscode.commands.executeCommand('folderNotesMD.refresh');
+  assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), [...DEFAULT_FOLDERS]);
+  console.log('PASS Remove Folder handles inherited defaults, persists the final empty list, and preserves directories and files');
 
   const files = new WorkspaceFiles(root);
   assert.equal((await new NoteRepository(files).scan()).notes.length, 0, 'Defaults do not index personal legacy paths');
@@ -63,12 +87,21 @@ export async function run(): Promise<void> {
     console.log('PASS safe creation, duplicate titles, concurrent creation, and create watcher');
 
     const roots = explorer.getChildren();
-    assert.deepEqual(roots.map(node => node.label), ['New Note', 'Browse by Folder', 'Browse by Tag', 'Recent Notes']);
-    assert.deepEqual(explorer.getChildren(roots[1]).map(node => node.label), ['idea', 'note']);
-    const unusedTag = explorer.getChildren(roots[2]).find(node => node.label === 'unused');
+    assert.deepEqual(roots.map(node => node.label), ['New Note', 'Add Folder', 'Browse by Folder', 'Browse by Tag', 'Recent Notes']);
+    const addFolderNode = roots.find(node => node.kind === 'addFolder')!;
+    assert.equal(explorer.getTreeItem(addFolderNode).command?.command, 'folderNotesMD.addFolder');
+    assert.equal(explorer.getTreeItem(addFolderNode).collapsibleState, vscode.TreeItemCollapsibleState.None);
+    assert.deepEqual(explorer.getChildren(addFolderNode), []);
+    const foldersRoot = roots.find(node => node.kind === 'folders')!;
+    const tagsRoot = roots.find(node => node.kind === 'tags')!;
+    assert.deepEqual(explorer.getChildren(foldersRoot).map(node => node.label), ['idea', 'note']);
+    for (const folderNode of explorer.getChildren(foldersRoot)) {
+      assert.equal(explorer.getTreeItem(folderNode).contextValue, 'folderNotesMD.folder', 'Folder groups expose the removal context menu');
+    }
+    const unusedTag = explorer.getChildren(tagsRoot).find(node => node.label === 'unused');
     assert.ok(unusedTag, 'Configured unused tags are visible');
     assert.deepEqual(explorer.getChildren(unusedTag), []);
-    const tags = explorer.getChildren(roots[2]);
+    const tags = explorer.getChildren(tagsRoot);
     assert.ok(tags.some(topic => topic.label === 'Plans'));
     assert.ok(tags.some(topic => topic.label === 'learning'));
     for (const topic of tags.filter(topic => ['Plans', 'learning'].includes(topic.label))) {
@@ -145,7 +178,7 @@ export async function run(): Promise<void> {
     const customExplorer = new NoteExplorer(() => customIndex.notes, relativePath => files.uri(relativePath), () => customFolders);
     try {
       await customIndex.refresh();
-      assert.equal(customExplorer.getChildren(customExplorer.getChildren()[1]).length, 6, 'No three-folder limit');
+      assert.equal(customExplorer.getChildren(customExplorer.getChildren().find(node => node.kind === 'folders')).length, 6, 'No three-folder limit');
       const customPath = await customRepository.create({ title: 'Custom folder', folder: 'work[plans]/notes', tags: ['personal'] });
       await eventually(() => customIndex.notes.some(note => note.relativePath === customPath && note.folder === 'work[plans]/notes'), 'watch custom nested folder with literal brackets');
       const nestedPath = await customRepository.create({ title: 'Nested root', folder: 'idea/nested', tags: ['nested'] });
@@ -170,6 +203,126 @@ export async function run(): Promise<void> {
     await fs.writeFile(path.join(root.fsPath, configuredBadPath), '# Valid plain Markdown\n');
     await eventually(() => vscode.languages.getDiagnostics(files.uri(configuredBadPath)).length === 0, 'custom configured folder watcher clears resolved warning');
     console.log('PASS live folder configuration changes update extension indexing and diagnostics');
+
+    const importedFolder = 'existing papers';
+    const secondFolder = '资料';
+    const importedText = new Map([
+      [`${importedFolder}/nested/paper.md`, '---\ntitle: Existing research\ntags: [Optimization, optimization, ML]\nauthor: Someone\n---\n\n# Different body title\n'],
+      [`${importedFolder}/plain.MD`, '# Existing plain note\n'],
+      [`${importedFolder}/broken.md`, '---\ntags: [unterminated\n---\n# Broken imported note\n'],
+      [`${secondFolder}/old.md`, '---\ntitle: Old topic note\ntopics: Research\ncustom: true\n---\n# Body\n'],
+    ]);
+    await fs.mkdir(path.join(root.fsPath, importedFolder, 'nested'), { recursive: true });
+    await fs.mkdir(path.join(root.fsPath, secondFolder), { recursive: true });
+    for (const [relativePath, text] of importedText) await fs.writeFile(path.join(root.fsPath, relativePath), text);
+    await fs.writeFile(path.join(root.fsPath, importedFolder, 'ignore.txt'), 'Not Markdown');
+    await vscode.commands.executeCommand('folderNotesMD.addFolder', [files.uri(importedFolder), files.uri(secondFolder)]);
+    const expectedFolders = ['projects', 'archive', importedFolder, secondFolder];
+    const folderSettings = vscode.workspace.getConfiguration('folderNotesMD', root);
+    assert.deepEqual(folderSettings.get('folders'), expectedFolders, 'Add Folder preserves existing destinations');
+    assert.deepEqual(folderSettings.inspect('folders')?.workspaceFolderValue, expectedFolders, 'Added folders persist in this workspace folder');
+    const importedBadPath = `${importedFolder}/broken.md`;
+    await eventually(() => vscode.languages.getDiagnostics(files.uri(importedBadPath)).length > 0, 'Add Folder reconnects extension and reports imported malformed YAML');
+    assert.deepEqual(vscode.languages.getDiagnostics(files.uri(`${importedFolder}/nested/paper.md`)), [], 'Partial and custom YAML fields are accepted');
+    await vscode.commands.executeCommand('folderNotesMD.addFolder', files.uri(importedFolder));
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), expectedFolders, 'Adding the same folder twice is idempotent');
+
+    const importedIndex = new NoteIndex(new NoteRepository(files, expectedFolders), root, () => undefined);
+    const importedExplorer = new NoteExplorer(() => importedIndex.notes, relativePath => files.uri(relativePath), () => expectedFolders);
+    try {
+      await importedIndex.refresh();
+      const importedNotes = importedIndex.notes.filter(note => note.folder === importedFolder || note.folder === secondFolder);
+      assert.equal(importedNotes.length, 4, 'Only Markdown files are imported recursively');
+      const paper = importedNotes.find(note => note.relativePath === `${importedFolder}/nested/paper.md`)!;
+      assert.equal(paper.title, 'Existing research');
+      assert.equal(paper.folder, importedFolder);
+      assert.deepEqual(paper.tags, ['Optimization', 'ML']);
+      assert.deepEqual(paper.issues, []);
+      assert.equal(importedNotes.find(note => note.relativePath.endsWith('/plain.MD'))?.title, 'Existing plain note');
+      assert.deepEqual(importedNotes.find(note => note.folder === secondFolder)?.tags, ['Research']);
+      const importedGroups = importedExplorer.getChildren(importedExplorer.getChildren().find(node => node.kind === 'folders'));
+      const importedGroup = importedGroups.find(node => node.folder === importedFolder)!;
+      assert.equal(importedExplorer.getChildren(importedGroup).length, 3, 'Added folder appears as a browsable group');
+      const tagGroups = importedExplorer.getChildren(importedExplorer.getChildren().find(node => node.kind === 'tags'));
+      const optimizationTag = tagGroups.find(node => node.label === 'Optimization')!;
+      assert.ok(importedExplorer.getChildren(optimizationTag).some(note => note.relativePath === paper.relativePath));
+      for (const [relativePath, text] of importedText) {
+        assert.equal(await fs.readFile(path.join(root.fsPath, relativePath), 'utf8'), text, 'Import must preserve existing files byte-for-byte');
+      }
+      const repairedText = '---\ntitle: Repaired imported note\ntags: Imported\n---\n';
+      await fs.writeFile(path.join(root.fsPath, importedBadPath), repairedText);
+      await eventually(() => importedIndex.notes.some(note => note.relativePath === importedBadPath && note.tags.includes('Imported')), 'Imported folder watcher reads subsequent metadata edits');
+      await eventually(() => vscode.languages.getDiagnostics(files.uri(importedBadPath)).length === 0, 'Actual extension watcher clears repaired imported YAML warning');
+      console.log('PASS Add Folder command, persistent configuration, recursive YAML import, grouping, deduplication, unchanged files, and watchers');
+    } finally {
+      importedExplorer.dispose(); importedIndex.dispose();
+    }
+
+    const linkedFolder = path.join(root.fsPath, 'linked-import');
+    await fs.symlink(path.join(root.fsPath, importedFolder), linkedFolder, 'dir');
+    try {
+      await assert.rejects(validateSelectedFolders(root, [vscode.Uri.file(linkedFolder)], files), /[Ss]ymbolic links/);
+      await assert.rejects(validateSelectedFolders(root, [vscode.Uri.file(path.join(linkedFolder, 'nested'))], files), /[Ss]ymbolic links/);
+    } finally {
+      await fs.unlink(linkedFolder);
+    }
+    console.log('PASS Add Folder rejects real symbolic-link selections and ancestors');
+
+    await fs.writeFile(path.join(root.fsPath, importedBadPath), importedText.get(importedBadPath)!);
+    await eventually(() => vscode.languages.getDiagnostics(files.uri(importedBadPath)).length > 0, 'Imported folder is indexed before removal');
+    const beforeRemoval = new Map<string, Buffer>();
+    for (const relativePath of [...importedText.keys(), `${importedFolder}/ignore.txt`]) {
+      beforeRemoval.set(relativePath, await fs.readFile(path.join(root.fsPath, relativePath)));
+    }
+    await vscode.commands.executeCommand('folderNotesMD.removeFolder', { kind: 'folder', folder: importedFolder });
+    const afterRemovalFolders = ['projects', 'archive', secondFolder];
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), afterRemovalFolders, 'Removing a sidebar group preserves the other configured groups');
+    await eventually(() => vscode.languages.getDiagnostics(files.uri(importedBadPath)).length === 0, 'Removing a folder clears its metadata diagnostics');
+    const afterRemoval = await new NoteRepository(files, afterRemovalFolders).scan();
+    assert.ok(!afterRemoval.notes.some(note => note.relativePath.startsWith(`${importedFolder}/`)));
+    assert.ok(afterRemoval.notes.some(note => note.folder === secondFolder), 'Unrelated folders remain indexed');
+    assert.ok((await fs.stat(path.join(root.fsPath, importedFolder))).isDirectory(), 'Removed folder stays on disk');
+    assert.ok((await fs.stat(path.join(root.fsPath, importedFolder, 'nested'))).isDirectory(), 'Nested directory stays on disk');
+    for (const [relativePath, bytes] of beforeRemoval) {
+      assert.deepEqual(await fs.readFile(path.join(root.fsPath, relativePath)), bytes, 'Removal preserves Markdown and other file bytes');
+    }
+    await vscode.commands.executeCommand('folderNotesMD.addFolder', files.uri(importedFolder));
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), [...afterRemovalFolders, importedFolder], 'A removed folder can be added again');
+    await eventually(() => vscode.languages.getDiagnostics(files.uri(importedBadPath)).length > 0, 'Re-adding restores metadata diagnostics');
+    console.log('PASS Remove Folder sidebar argument, index removal, diagnostic cleanup, file preservation, and re-add');
+
+    const nestedImport = `${importedFolder}/nested`;
+    await vscode.commands.executeCommand('folderNotesMD.addFolder', files.uri(nestedImport));
+    await vscode.commands.executeCommand('folderNotesMD.removeFolder', nestedImport);
+    const coveredByParent = await new NoteRepository(files, vscode.workspace.getConfiguration('folderNotesMD', root).get<string[]>('folders')!).scan();
+    assert.equal(coveredByParent.notes.find(note => note.relativePath === `${nestedImport}/paper.md`)?.folder, importedFolder, 'Removing a nested group keeps notes covered by its parent');
+    await vscode.commands.executeCommand('folderNotesMD.addFolder', files.uri(nestedImport));
+    await vscode.commands.executeCommand('folderNotesMD.removeFolder', importedFolder);
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), [...afterRemovalFolders, nestedImport], 'Removing a parent group preserves an explicitly configured nested group');
+    const retainedNested = await new NoteRepository(files, [...afterRemovalFolders, nestedImport]).scan();
+    assert.equal(retainedNested.notes.find(note => note.relativePath === `${nestedImport}/paper.md`)?.folder, nestedImport);
+    assert.ok(!retainedNested.notes.some(note => note.relativePath === importedBadPath));
+    await vscode.commands.executeCommand('folderNotesMD.addFolder', files.uri(importedFolder));
+    await vscode.commands.executeCommand('folderNotesMD.removeFolder', nestedImport);
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), [...afterRemovalFolders, importedFolder]);
+    console.log('PASS Remove Folder preserves nested configured groups and reassigns notes still covered by a parent');
+
+    const legacyGroups = [
+      { path: 'notes/idea.md', folder: 'legacy-only' },
+      { path: 'reading', folder: secondFolder },
+    ];
+    await vscode.workspace.getConfiguration('folderNotesMD', root).update('legacySources', legacyGroups, vscode.ConfigurationTarget.WorkspaceFolder);
+    await vscode.commands.executeCommand('folderNotesMD.removeFolder', { kind: 'folder', folder: 'legacy-only' });
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('legacySources'), [legacyGroups[1]], 'Legacy-only folder removal removes its source mappings');
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), [...afterRemovalFolders, importedFolder], 'Legacy-only removal preserves managed folders');
+    await vscode.commands.executeCommand('folderNotesMD.removeFolder', secondFolder);
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('folders'), ['projects', 'archive', importedFolder]);
+    assert.deepEqual(vscode.workspace.getConfiguration('folderNotesMD', root).get('legacySources'), [], 'Removing a shared group clears both managed and legacy membership');
+    assert.equal(await fs.readFile(path.join(root.fsPath, `${secondFolder}/old.md`), 'utf8'), importedText.get(`${secondFolder}/old.md`));
+    assert.ok((await fs.stat(path.join(root.fsPath, secondFolder))).isDirectory());
+    assert.equal(await fs.readFile(path.join(root.fsPath, 'notes/idea.md'), 'utf8'), oldIdea);
+    assert.equal(await fs.readFile(path.join(root.fsPath, 'reading/old.md'), 'utf8'), oldReference);
+    console.log('PASS Remove Folder clears legacy-only and shared group membership without changing source files');
 
     assert.equal(await fs.readFile(path.join(root.fsPath, 'notes/idea.md'), 'utf8'), oldIdea);
     assert.equal(await fs.readFile(path.join(root.fsPath, 'reading/old.md'), 'utf8'), oldReference);

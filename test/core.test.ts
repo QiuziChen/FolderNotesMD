@@ -1,7 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { localDate, noteFilename, titleSlug } from '../src/filenames';
-import { normalizeTags, parseNote, serializeNote, validateTitle } from '../src/frontmatter';
+import { normalizeTags, parseExistingNote, parseNote, serializeNote, validateTitle } from '../src/frontmatter';
 import { DEFAULT_FOLDERS, isCalendarDate, NoteMetadata } from '../src/model';
 import { validateFolders, validateTags } from '../src/configuration';
 
@@ -73,9 +73,56 @@ test('invalid YAML, duplicate keys, aliases, unsupported tags, and oversized met
     `${validFields}\n# ${'x'.repeat(65536)}`,
   ];
   for (const fields of cases) {
-    const result = parseNote(frontmatter(fields), 'idea');
-    assert.equal(result.metadata, undefined);
-    assert.ok(result.issues.length > 0);
+    for (const parse of [parseNote, parseExistingNote]) {
+      const result = parse(frontmatter(fields), 'idea');
+      assert.equal(result.metadata, undefined);
+      assert.ok(result.issues.length > 0);
+    }
+  }
+});
+
+test('existing notes accept optional metadata and ignore unrelated YAML fields', () => {
+  assert.deepEqual(parseExistingNote('# Plain Markdown', 'reading'), { issues: [] });
+  assert.deepEqual(parseExistingNote('---\n---\n', 'reading'), { metadata: { folder: 'reading' }, issues: [] });
+  assert.deepEqual(parseExistingNote(frontmatter('title: Existing title\nauthor: Ada\nupdated: 2026-10-19\n__proto__: {polluted: true}'), 'reading'), {
+    metadata: { folder: 'reading', title: 'Existing title' },
+    issues: [],
+  });
+  assert.deepEqual(parseExistingNote(frontmatter('tags: [" Work ", work, "Café", "CAFE\\u0301"]'), 'reading'), {
+    metadata: { folder: 'reading', tags: ['Work', 'Café'] },
+    issues: [],
+  });
+});
+
+test('existing scalar tags and legacy topics are one tag and explicit tags take precedence', () => {
+  for (const field of ['tags', 'topics']) {
+    assert.deepEqual(parseExistingNote(frontmatter(`${field}: " Research, planning "`), 'reading'), {
+      metadata: { folder: 'reading', tags: ['Research, planning'] },
+      issues: [],
+    });
+  }
+  assert.deepEqual(parseExistingNote(frontmatter('type: Literature\ntopics: [Work, work, 随笔]'), 'reading').metadata?.tags, ['Work', '随笔']);
+  assert.deepEqual(parseExistingNote(frontmatter('tags: []\ntopics: [ignored]'), 'reading').metadata?.tags, []);
+  const invalidTags = parseExistingNote(frontmatter('tags: 42\ntopics: [ignored]'), 'reading');
+  assert.deepEqual(invalidTags.metadata?.tags, []);
+  assert.equal(invalidTags.issues.length, 1);
+});
+
+test('invalid existing metadata fields do not discard valid fields or tag entries', () => {
+  const parsed = parseExistingNote(frontmatter('title: Preserved title\nfolder: elsewhere\ntags: [Work, 42, " ", work, Reading]\ncreated: 2026-02-29'), 'reading');
+  assert.deepEqual(parsed.metadata, { folder: 'reading', title: 'Preserved title', tags: ['Work', 'Reading'] });
+  assert.equal(parsed.issues.length, 3);
+  assert.match(parsed.issues.join(' '), /expected reading/u);
+  const invalidTitle = parseExistingNote(frontmatter('title: 42\ntags: research\ncreated: 2026-10-18'), 'reading');
+  assert.deepEqual(invalidTitle.metadata, { folder: 'reading', tags: ['research'], created: '2026-10-18' });
+  assert.equal(invalidTitle.issues.length, 1);
+});
+
+test('existing malformed frontmatter warns instead of being treated as missing', () => {
+  for (const text of ['---', '---\ntitle: Unclosed', frontmatter('[not, a, mapping]')]) {
+    const parsed = parseExistingNote(text, 'reading');
+    assert.equal(parsed.metadata, undefined);
+    assert.ok(parsed.issues.length > 0);
   }
 });
 

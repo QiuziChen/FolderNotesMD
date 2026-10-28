@@ -2,7 +2,7 @@
   "name": "foldernotesmd",
   "displayName": "FolderNotesMD",
   "description": "Local Markdown notes with custom folders and tags.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "publisher": "foldernotesmd-local",
   "license": "MIT",
   "engines": {
@@ -38,6 +38,18 @@
         "title": "New Note",
         "category": "FolderNotesMD",
         "icon": "$(new-file)"
+      },
+      {
+        "command": "folderNotesMD.addFolder",
+        "title": "Add Folder",
+        "category": "FolderNotesMD",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "folderNotesMD.removeFolder",
+        "title": "Remove Folder (Keep Files)",
+        "category": "FolderNotesMD",
+        "icon": "$(remove)"
       },
       {
         "command": "folderNotesMD.refresh",
@@ -88,7 +100,7 @@
     "viewsWelcome": [
       {
         "view": "folderNotesMD.notes",
-        "contents": "Open a workspace folder to browse your notes.\n[New Note](command:folderNotesMD.newNote)\n[Configure Note Folders](command:folderNotesMD.configureFolders)"
+        "contents": "Open a workspace folder to browse your notes.\n[Add Folder](command:folderNotesMD.addFolder)\n[New Note](command:folderNotesMD.newNote)\n[Configure Note Folders](command:folderNotesMD.configureFolders)"
       }
     ],
     "menus": {
@@ -99,17 +111,32 @@
           "group": "navigation@1"
         },
         {
-          "command": "folderNotesMD.refresh",
+          "command": "folderNotesMD.addFolder",
           "when": "view == folderNotesMD.notes",
           "group": "navigation@2"
         },
         {
-          "command": "folderNotesMD.configureFolders",
+          "command": "folderNotesMD.refresh",
           "when": "view == folderNotesMD.notes",
           "group": "navigation@3"
+        },
+        {
+          "command": "folderNotesMD.configureFolders",
+          "when": "view == folderNotesMD.notes",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
+        {
+          "command": "folderNotesMD.removeFolder",
+          "when": "view == folderNotesMD.notes && viewItem == folderNotesMD.folder",
+          "group": "inline"
+        },
+        {
+          "command": "folderNotesMD.removeFolder",
+          "when": "view == folderNotesMD.notes && viewItem == folderNotesMD.folder",
+          "group": "folderNotesMD@1"
+        },
         {
           "command": "folderNotesMD.preview",
           "when": "view == folderNotesMD.notes && viewItem == folderNotesMD.note",
@@ -193,7 +220,7 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "test:integration": "npm run build && node scripts/run-integration.cjs",
     "vscode:prepublish": "npm run build",
-    "package": "vsce package --allow-missing-repository --out foldernotesmd-0.1.0.vsix"
+    "package": "vsce package --allow-missing-repository --out foldernotesmd-0.3.0.vsix"
   },
   "dependencies": {
     "yaml": "^2.8.1"

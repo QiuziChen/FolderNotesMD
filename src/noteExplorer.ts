@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { NoteRecord } from './model';
 
-type NodeKind = 'new' | 'folders' | 'folder' | 'tags' | 'tag' | 'untagged' | 'recent' | 'note';
+type NodeKind = 'new' | 'addFolder' | 'folders' | 'folder' | 'tags' | 'tag' | 'untagged' | 'recent' | 'note';
 
 export interface ExplorerNode {
   readonly id: string;
@@ -15,6 +15,7 @@ export interface ExplorerNode {
 
 const roots: readonly ExplorerNode[] = [
   { id: 'new', label: 'New Note', kind: 'new' },
+  { id: 'addFolder', label: 'Add Folder', kind: 'addFolder' },
   { id: 'folders', label: 'Browse by Folder', kind: 'folders' },
   { id: 'tags', label: 'Browse by Tag', kind: 'tags' },
   { id: 'recent', label: 'Recent Notes', kind: 'recent' },
@@ -48,7 +49,7 @@ export class NoteExplorer implements vscode.TreeDataProvider<ExplorerNode>, vsco
   }
 
   getTreeItem(node: ExplorerNode): vscode.TreeItem {
-    const isLeaf = node.kind === 'note' || node.kind === 'new';
+    const isLeaf = node.kind === 'note' || node.kind === 'new' || node.kind === 'addFolder';
     const item = new vscode.TreeItem(node.label, isLeaf
       ? vscode.TreeItemCollapsibleState.None
       : vscode.TreeItemCollapsibleState.Collapsed);
@@ -57,6 +58,11 @@ export class NoteExplorer implements vscode.TreeDataProvider<ExplorerNode>, vsco
     if (node.kind === 'new') {
       item.iconPath = new vscode.ThemeIcon('add');
       item.command = { command: 'folderNotesMD.newNote', title: 'New Note' };
+    } else if (node.kind === 'addFolder') {
+      item.iconPath = new vscode.ThemeIcon('new-folder');
+      item.description = 'Existing Markdown notes';
+      item.tooltip = 'Add an existing folder from this workspace and discover its Markdown notes and YAML metadata.';
+      item.command = { command: 'folderNotesMD.addFolder', title: 'Add Folder' };
     } else if (node.kind === 'note' && node.note) {
       const note = node.note;
       item.resourceUri = this.getUri(note.relativePath);
@@ -76,6 +82,10 @@ export class NoteExplorer implements vscode.TreeDataProvider<ExplorerNode>, vsco
         arguments: [note.relativePath],
       };
     } else {
+      if (node.kind === 'folder') {
+        item.contextValue = 'folderNotesMD.folder';
+        item.tooltip = `${node.folder}\nRemove Folder (Keep Files) stops managing this group without deleting its files.`;
+      }
       const icon = node.kind === 'recent' ? 'history'
         : ['tags', 'tag', 'untagged'].includes(node.kind) ? 'tag' : 'folder';
       item.iconPath = new vscode.ThemeIcon(icon);
@@ -85,7 +95,7 @@ export class NoteExplorer implements vscode.TreeDataProvider<ExplorerNode>, vsco
 
   getChildren(node?: ExplorerNode): ExplorerNode[] {
     if (!node) return [...roots];
-    if (node.kind === 'new' || node.kind === 'note') return [];
+    if (node.kind === 'new' || node.kind === 'addFolder' || node.kind === 'note') return [];
     const notes = this.getNotes();
     if (node.kind === 'folders') {
       const folders = [...new Set([...this.getFolders(), ...notes.map(note => note.folder)])];

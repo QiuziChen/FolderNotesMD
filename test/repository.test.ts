@@ -125,6 +125,61 @@ test('malformed YAML warns while plain Markdown remains browsable without metada
   assert.equal(files.writes, 0);
 });
 
+test('existing partial metadata is indexed without requiring migration or writing files', async () => {
+  const files = new MemoryFiles();
+  files.put('note/partial.md', '---\ntitle: Existing title\ntags: Research\nauthor: Ada\n---\n# Body heading\n');
+  files.put('note/tags-only.md', '---\ntags: [Work, work]\n---\n# Heading title\n');
+  files.put('reading/old.md', '---\ntopics: Reading\ncustom: true\n---\nBody without a heading.\n');
+  const before = structuredClone([...files.entries]);
+  const result = await new NoteRepository(files, ['note'], legacySources).scan();
+  const partial = result.notes.find(note => note.relativePath === 'note/partial.md')!;
+  assert.equal(partial.title, 'Existing title');
+  assert.deepEqual(partial.tags, ['Research']);
+  assert.equal(partial.created, undefined);
+  const tagsOnly = result.notes.find(note => note.relativePath === 'note/tags-only.md')!;
+  assert.equal(tagsOnly.title, 'Heading title');
+  assert.deepEqual(tagsOnly.tags, ['Work']);
+  const legacy = result.notes.find(note => note.relativePath === 'reading/old.md')!;
+  assert.equal(legacy.title, 'old');
+  assert.deepEqual(legacy.tags, ['Reading']);
+  assert.ok(result.notes.every(note => note.issues.length === 0));
+  assert.deepEqual(result.errors, []);
+  assert.equal(files.writes, 0);
+  assert.deepEqual([...files.entries], before);
+});
+
+test('invalid existing fields warn while valid metadata remains indexed', async () => {
+  const files = new MemoryFiles();
+  files.put('note/invalid-date.md', '---\ntitle: Keep title\ntags: [Research, 42, research]\ncreated: invalid\n---\n# Body\n');
+  files.put('note/invalid-title.md', '---\ntitle: 42\ntags: Work\ncreated: 2026-10-18\n---\n# Fallback title\n');
+  const before = structuredClone([...files.entries]);
+  const result = await new NoteRepository(files, ['note']).scan();
+  const invalidDate = result.notes.find(note => note.relativePath.endsWith('invalid-date.md'))!;
+  assert.equal(invalidDate.title, 'Keep title');
+  assert.deepEqual(invalidDate.tags, ['Research']);
+  assert.equal(invalidDate.created, undefined);
+  assert.equal(invalidDate.issues.length, 2);
+  const invalidTitle = result.notes.find(note => note.relativePath.endsWith('invalid-title.md'))!;
+  assert.equal(invalidTitle.title, 'Fallback title');
+  assert.deepEqual(invalidTitle.tags, ['Work']);
+  assert.equal(invalidTitle.created, '2026-10-18');
+  assert.equal(invalidTitle.issues.length, 1);
+  assert.equal(files.writes, 0);
+  assert.deepEqual([...files.entries], before);
+});
+
+test('fallback titles ignore comments inside YAML and use the body heading or filename', async () => {
+  const files = new MemoryFiles();
+  const yaml = '---\n# Metadata comment\ntags: [research]\n---\n';
+  files.put('note/heading.md', `${yaml}\n# Body title\n`);
+  files.put('note/filename.md', `${yaml}\nBody without a heading.\n`);
+  const result = await new NoteRepository(files).scan();
+  assert.equal(result.notes.find(note => note.relativePath.endsWith('/heading.md'))?.title, 'Body title');
+  assert.equal(result.notes.find(note => note.relativePath.endsWith('/filename.md'))?.title, 'filename');
+  assert.ok(result.notes.every(note => note.tags.includes('research') && !note.issues.length));
+  assert.equal(files.writes, 0);
+});
+
 test('unreadable notes remain visible and do not prevent indexing readable neighbors', async () => {
   const files = new MemoryFiles();
   files.put('note/unreadable.md', 'private contents');
@@ -154,6 +209,8 @@ test('folder classification stays authoritative when frontmatter declares a diff
   files.put('note/wrong-type.md', validNote('Wrong type', 'idea'));
   const result = await new NoteRepository(files, ['idea', 'note'], legacySources).scan();
   assert.equal(result.notes[0].folder, 'note');
+  assert.equal(result.notes[0].title, 'Wrong type');
+  assert.deepEqual(result.notes[0].tags, ['planning']);
   assert.ok(result.notes[0].issues.length > 0);
   assert.equal(files.writes, 0);
 });

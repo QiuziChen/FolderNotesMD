@@ -1,5 +1,5 @@
 import { localDate, noteFilename } from './filenames';
-import { parseNote, serializeNote, validateTitle } from './frontmatter';
+import { parseExistingNote, serializeNote, validateTitle } from './frontmatter';
 import { DEFAULT_LEGACY_SOURCES, LegacySource, validateLegacySources, validateRelativePath } from './legacy';
 import { DEFAULT_FOLDERS, NewNoteInput, NoteMetadata, NoteRecord } from './model';
 import { validateFolders, validateTags } from './configuration';
@@ -34,7 +34,14 @@ function message(error: unknown): string {
 }
 
 function fallbackTitle(text: string, path: string): string {
-  const heading = /^ {0,3}#\s+(.+?)\s*#*\s*$/mu.exec(text)?.[1]?.trim();
+  let body = text.replace(/^\uFEFF/u, '');
+  const opening = /^---[ \t]*\r?\n/u.exec(body);
+  if (opening) {
+    const remainder = body.slice(opening[0].length);
+    const closing = /^---[ \t]*\r?$/mu.exec(remainder);
+    if (closing) body = remainder.slice(closing.index + closing[0].length);
+  }
+  const heading = /^ {0,3}#\s+(.+?)\s*#*\s*$/mu.exec(body)?.[1]?.trim();
   if (heading) return heading;
   return (path.split('/').pop() ?? path).replace(/\.md$/iu, '');
 }
@@ -95,8 +102,7 @@ export class NoteRepository {
         issues.push(issue);
         errors.push(`${path}: ${issue}`);
       }
-      const hasFrontmatter = /^(?:\uFEFF)?---\s*(?:\r?\n|$)/u.test(text);
-      const parsed = readable && hasFrontmatter ? parseNote(text, folder) : undefined;
+      const parsed = readable ? parseExistingNote(text, folder) : undefined;
       if (parsed) issues.push(...parsed.issues);
       const metadata = parsed?.metadata;
       notes.push({

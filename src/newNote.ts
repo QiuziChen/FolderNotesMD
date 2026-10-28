@@ -27,7 +27,7 @@ export async function promptNewNote(
   tags: readonly string[],
   ui: WizardUI,
 ): Promise<NewNoteInput | undefined> {
-  if (!folders.length) throw new Error('Add a folder in the folderNotesMD.folders setting before creating a note.');
+  if (!folders.length) throw new Error('Use Add Folder in the sidebar, or configure folderNotesMD.folders before creating a note.');
   const folder = await ui.showQuickPick<FolderItem>(
     folders.map((folder) => ({ label: folder, folder })),
     { title: 'FolderNotesMD: New Note', placeHolder: 'Select a note folder', ignoreFocusOut: true },

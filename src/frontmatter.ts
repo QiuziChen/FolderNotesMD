@@ -7,6 +7,11 @@ export interface ParsedNote {
   issues: string[];
 }
 
+export interface ParsedExistingNote {
+  metadata?: Partial<NoteMetadata>;
+  issues: string[];
+}
+
 const METADATA_FIELDS = ['title', 'folder', 'tags', 'created'] as const;
 const LEGACY_METADATA_FIELDS = ['title', 'type', 'topics', 'created'] as const;
 const MAX_FRONTMATTER_LENGTH = 64 * 1024;
@@ -97,16 +102,16 @@ function validateMetadata(value: unknown, expectedFolder: string, allowLegacy = 
   };
 }
 
-export function parseNote(text: string, expectedFolder: string): ParsedNote {
+function readFrontmatter(text: string): { present: boolean; value?: unknown; issues: string[] } {
   const content = text.replace(/^\uFEFF/u, '');
-  const opening = /^---[ \t]*\r?\n/u.exec(content);
-  if (!opening) return { issues: ['Missing YAML frontmatter at the start of the file.'] };
+  const opening = /^---[ \t]*(?:\r?\n|$)/u.exec(content);
+  if (!opening) return { present: false, issues: [] };
 
   const remainder = content.slice(opening[0].length);
   const closing = /^---[ \t]*\r?$/mu.exec(remainder);
-  if (!closing) return { issues: ['YAML frontmatter is missing its closing --- delimiter.'] };
+  if (!closing) return { present: true, issues: ['YAML frontmatter is missing its closing --- delimiter.'] };
   if (closing.index > MAX_FRONTMATTER_LENGTH) {
-    return { issues: ['YAML frontmatter exceeds the 65,536-character limit.'] };
+    return { present: true, issues: ['YAML frontmatter exceeds the 65,536-character limit.'] };
   }
 
   try {
@@ -116,13 +121,68 @@ export function parseNote(text: string, expectedFolder: string): ParsedNote {
       uniqueKeys: true,
     });
     const diagnostics = [...document.errors, ...document.warnings];
-    if (diagnostics.length) return { issues: diagnostics.map((diagnostic) => `Invalid YAML: ${diagnostic.message}`) };
+    if (diagnostics.length) return { present: true, issues: diagnostics.map((diagnostic) => `Invalid YAML: ${diagnostic.message}`) };
     // A Map avoids object-prototype keys. No aliases are needed by this schema.
     const value: unknown = document.toJS({ mapAsMap: true, maxAliasCount: 0 });
-    return validateMetadata(value, expectedFolder);
+    return { present: true, value, issues: [] };
   } catch (error: unknown) {
-    return { issues: [`Invalid YAML: ${error instanceof Error ? error.message : 'Unable to parse frontmatter.'}`] };
+    return { present: true, issues: [`Invalid YAML: ${error instanceof Error ? error.message : 'Unable to parse frontmatter.'}`] };
   }
+}
+
+export function parseNote(text: string, expectedFolder: string): ParsedNote {
+  const parsed = readFrontmatter(text);
+  if (!parsed.present) return { issues: ['Missing YAML frontmatter at the start of the file.'] };
+  if (parsed.issues.length) return { issues: parsed.issues };
+  return validateMetadata(parsed.value, expectedFolder);
+}
+
+/** Read existing documents without requiring or rewriting the new-note schema. */
+export function parseExistingNote(text: string, expectedFolder: string): ParsedExistingNote {
+  const parsed = readFrontmatter(text);
+  if (!parsed.present || parsed.issues.length) return { issues: parsed.issues };
+  const value = parsed.value;
+  if (value === null) return { metadata: { folder: expectedFolder }, issues: [] };
+  if (!(value instanceof Map)) return { issues: ['Frontmatter must be a YAML mapping.'] };
+
+  const metadata: Partial<NoteMetadata> = { folder: expectedFolder };
+  const issues: string[] = [];
+  if (value.has('title')) {
+    const title: unknown = value.get('title');
+    if (typeof title !== 'string' || validateTitle(title) !== undefined) {
+      issues.push('The title must be a nonempty, single-line string without control characters.');
+    } else metadata.title = title.trim();
+  }
+  if (value.has('folder')) {
+    const folder: unknown = value.get('folder');
+    if (typeof folder !== 'string') issues.push('The folder must be a workspace-relative path.');
+    else {
+      try {
+        if (validateRelativePath(folder) !== expectedFolder) {
+          issues.push(`The folder must match its configured folder: expected ${expectedFolder}.`);
+        }
+      } catch (error) {
+        issues.push(error instanceof Error ? error.message : 'Invalid folder path.');
+      }
+    }
+  }
+  const tagField = value.has('tags') ? 'tags' : value.has('topics') ? 'topics' : undefined;
+  if (tagField) {
+    const tags: unknown = value.get(tagField);
+    const entries: unknown[] = typeof tags === 'string' ? [tags] : Array.isArray(tags) ? tags : [];
+    const valid = entries.filter((tag): tag is string => typeof tag === 'string' && validateTitle(tag) === undefined);
+    if ((!Array.isArray(tags) && typeof tags !== 'string') || valid.length !== entries.length) {
+      issues.push(`The ${tagField} field must be a nonempty, single-line string or an array of such strings without control characters; an empty array is allowed.`);
+    }
+    metadata.tags = normalizeTags(valid);
+  }
+  if (value.has('created')) {
+    const created: unknown = value.get('created');
+    if (typeof created !== 'string' || !isCalendarDate(created)) {
+      issues.push('The created field must be a valid calendar date in YYYY-MM-DD format.');
+    } else metadata.created = created;
+  }
+  return { metadata, issues };
 }
 
 export function serializeNote(metadata: NoteMetadata): string {

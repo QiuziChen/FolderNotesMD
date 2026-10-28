@@ -7,6 +7,8 @@ import { promptNewNote } from './newNote';
 import { DEFAULT_LEGACY_SOURCES, validateLegacySources } from './legacy';
 import { DEFAULT_FOLDERS } from './model';
 import { validateFolders, validateTags } from './configuration';
+import { mergeNoteFolders, promptExistingFolders, validateSelectedFolders } from './addFolder';
+import { promptFolderRemoval, removeNoteFolder } from './removeFolder';
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const output = vscode.window.createOutputChannel('FolderNotesMD');
@@ -18,6 +20,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let tags: string[] = [];
   let generation = 0;
   let disposed = false;
+  let changingFolders = false;
   const explorer = new NoteExplorer(() => index?.notes ?? [], path => files?.uri(path),
     () => repository?.folders ?? DEFAULT_FOLDERS, () => tags);
   const view = vscode.window.createTreeView('folderNotesMD.notes', { treeDataProvider: explorer });
@@ -78,6 +81,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     return true;
   }
 
+  function isCurrentWorkspace(folder: vscode.WorkspaceFolder): boolean {
+    return !disposed && selected?.uri.toString() === folder.uri.toString()
+      && !!vscode.workspace.workspaceFolders?.some(candidate => candidate.uri.toString() === folder.uri.toString());
+  }
+
   function register(name: string, action: (...args: any[]) => Promise<unknown> | unknown): void {
     context.subscriptions.push(vscode.commands.registerCommand(name, async (...args: any[]) => {
       try { return await action(...args); } catch (error) { await reportError(error); }
@@ -103,6 +111,73 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const path = await currentStore.create(input);
     await currentIndex.refresh();
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(currentFiles.uri(path)));
+  });
+  register('folderNotesMD.addFolder', async (argument?: unknown) => {
+    if (changingFolders) return;
+    changingFolders = true;
+    try {
+      if (!await chooseRoot()) return;
+      const target = selected!;
+      const targetFiles = files!;
+      const selections = argument === undefined ? await promptExistingFolders(target.uri, vscode.window)
+        : argument instanceof vscode.Uri ? [argument]
+        : Array.isArray(argument) && argument.every(uri => uri instanceof vscode.Uri) ? argument as vscode.Uri[]
+        : undefined;
+      if (argument !== undefined && selections === undefined) throw new Error('Select an existing workspace folder to add.');
+      if (!selections?.length) return;
+      if (!isCurrentWorkspace(target)) throw new Error('The notes workspace changed. Start Add Folder again.');
+      const additions = await validateSelectedFolders(target.uri, selections, targetFiles);
+      if (!isCurrentWorkspace(target)) throw new Error('The notes workspace changed. Start Add Folder again.');
+
+      // Read settings after the dialog and filesystem checks so concurrent edits are retained.
+      const settings = vscode.workspace.getConfiguration('folderNotesMD', target.uri);
+      const current = validateFolders(settings.get<unknown>('folders', DEFAULT_FOLDERS));
+      const legacy = validateLegacySources(settings.get<unknown>('legacySources', DEFAULT_LEGACY_SOURCES), current);
+      const next = mergeNoteFolders(current, additions, legacy);
+      if (next.length !== current.length) {
+        await settings.update('folders', next, vscode.ConfigurationTarget.WorkspaceFolder);
+      }
+      // Wait for a scan even if the folders were already configured. Never switch workspaces back.
+      if (isCurrentWorkspace(target)) await connect(selected);
+    } finally {
+      changingFolders = false;
+    }
+  });
+  register('folderNotesMD.removeFolder', async (argument?: unknown) => {
+    if (changingFolders) return;
+    changingFolders = true;
+    try {
+      if (!await chooseRoot()) return;
+      const target = selected!;
+      const available = [...new Set([...repository!.folders, ...repository!.legacySources.map(source => source.folder)])];
+      const folder = argument === undefined ? await promptFolderRemoval(available, vscode.window)
+        : typeof argument === 'string' ? argument
+        : argument && typeof argument === 'object' && 'kind' in argument && argument.kind === 'folder'
+          && 'folder' in argument && typeof argument.folder === 'string' ? argument.folder : undefined;
+      if (argument !== undefined && folder === undefined) throw new Error('Select a folder in Browse by Folder to remove it from the sidebar.');
+      if (folder === undefined) return;
+      if (!isCurrentWorkspace(target)) throw new Error('The notes workspace changed. Start Remove Folder again.');
+
+      // Persist explicit arrays, including [], so removed defaults do not return on reload.
+      const settings = vscode.workspace.getConfiguration('folderNotesMD', target.uri);
+      const current = validateFolders(settings.get<unknown>('folders', DEFAULT_FOLDERS));
+      const legacy = validateLegacySources(settings.get<unknown>('legacySources', DEFAULT_LEGACY_SOURCES), current);
+      const next = removeNoteFolder(current, legacy, folder);
+      if (next.folders.length !== current.length) {
+        await settings.update('folders', next.folders, vscode.ConfigurationTarget.WorkspaceFolder);
+      }
+      if (next.legacySources.length !== legacy.length) {
+        // A group may also be supplied by legacy documents. Remove those mappings only.
+        const latest = vscode.workspace.getConfiguration('folderNotesMD', target.uri);
+        const latestFolders = validateFolders(latest.get<unknown>('folders', DEFAULT_FOLDERS));
+        const latestLegacy = validateLegacySources(latest.get<unknown>('legacySources', DEFAULT_LEGACY_SOURCES), latestFolders);
+        const remaining = removeNoteFolder(latestFolders, latestLegacy, folder).legacySources;
+        await latest.update('legacySources', remaining, vscode.ConfigurationTarget.WorkspaceFolder);
+      }
+      if (isCurrentWorkspace(target)) await connect(selected);
+    } finally {
+      changingFolders = false;
+    }
   });
   register('folderNotesMD.refresh', async () => { if (await chooseRoot()) await index!.refresh(); });
   register('folderNotesMD.selectRoot', async () => { await chooseRoot(true); });
