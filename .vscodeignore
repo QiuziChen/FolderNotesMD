@@ -1,0 +1,17 @@
+.vscode/**
+.vscode-test/**
+src/**
+test/**
+scripts/**
+tsconfig.json
+.gitignore
+**/*.map
+dist/test/**
+package-lock.json
+*.vsix
+.DS_Store
+**/.DS_Store
+node_modules/yaml/browser/**
+node_modules/yaml/**/*.d.ts
+node_modules/yaml/bin.mjs
+node_modules/yaml/README.md

@@ -1,0 +1,209 @@
+{
+  "name": "foldernotesmd",
+  "displayName": "FolderNotesMD",
+  "description": "Local Markdown notes with custom folders and tags.",
+  "version": "0.1.0",
+  "publisher": "foldernotesmd-local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "markdown",
+    "notes",
+    "folders",
+    "tags",
+    "knowledge"
+  ],
+  "main": "./dist/src/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Browse virtual workspaces; creating notes requires a filesystem-backed workspace for exclusive, non-overwriting creation."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "folderNotesMD.newNote",
+        "title": "New Note",
+        "category": "FolderNotesMD",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "folderNotesMD.refresh",
+        "title": "Refresh",
+        "category": "FolderNotesMD",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "folderNotesMD.selectRoot",
+        "title": "Select Notes Workspace",
+        "category": "FolderNotesMD"
+      },
+      {
+        "command": "folderNotesMD.openNote",
+        "title": "Open Note",
+        "category": "FolderNotesMD"
+      },
+      {
+        "command": "folderNotesMD.preview",
+        "title": "Open Markdown Preview",
+        "category": "FolderNotesMD",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "folderNotesMD.configureFolders",
+        "title": "Configure Note Folders",
+        "category": "FolderNotesMD",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "folderNotesMD",
+          "title": "FolderNotesMD",
+          "icon": "resources/journal.svg"
+        }
+      ]
+    },
+    "views": {
+      "folderNotesMD": [
+        {
+          "id": "folderNotesMD.notes",
+          "name": "FolderNotesMD"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "folderNotesMD.notes",
+        "contents": "Open a workspace folder to browse your notes.\n[New Note](command:folderNotesMD.newNote)\n[Configure Note Folders](command:folderNotesMD.configureFolders)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "folderNotesMD.newNote",
+          "when": "view == folderNotesMD.notes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "folderNotesMD.refresh",
+          "when": "view == folderNotesMD.notes",
+          "group": "navigation@2"
+        },
+        {
+          "command": "folderNotesMD.configureFolders",
+          "when": "view == folderNotesMD.notes",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "folderNotesMD.preview",
+          "when": "view == folderNotesMD.notes && viewItem == folderNotesMD.note",
+          "group": "inline"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "folderNotesMD.preview",
+          "when": "resourceLangId == markdown",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "folderNotesMD.openNote",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "FolderNotesMD",
+      "properties": {
+        "folderNotesMD.folders": {
+          "type": "array",
+          "scope": "resource",
+          "default": [
+            "idea",
+            "note"
+          ],
+          "description": "Workspace-relative folders for creating and browsing Markdown notes. Customize the list without a fixed folder limit. Nested paths are supported; the most specific configured folder owns each note. Folders are created only when saving a new note.",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "folderNotesMD.tags": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "description": "Reusable tag suggestions. Tags from existing notes are also offered, and new tags can be added while creating a note. Tags are optional and have no fixed vocabulary.",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "folderNotesMD.legacySources": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "description": "Optional existing Markdown files or folders outside the configured note folders. Each source is shown under its folder label. Files are read without migration or metadata changes. Set [] to disable.",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "folder"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Workspace-relative Markdown file or directory path."
+              },
+              "folder": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Group for existing documents, using the same naming rules as workspace-relative folder paths."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -w -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "test:integration": "npm run build && node scripts/run-integration.cjs",
+    "vscode:prepublish": "npm run build",
+    "package": "vsce package --allow-missing-repository --out foldernotesmd-0.1.0.vsix"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.100.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.9.3"
+  },
+  "private": true
+}

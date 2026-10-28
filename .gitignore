@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.vsix
+.vscode-test/
+.DS_Store
+.vscode/settings.json
+.env
+.env.*
+*.log
+*.pem
+*.key
